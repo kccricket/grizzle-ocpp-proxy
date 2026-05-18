@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import time
 from typing import Tuple
 import json
@@ -42,8 +43,30 @@ class OCPP2WProxy:
     @staticmethod
     def decode_ocpp_message(message: str) -> Tuple[OCPPMessageType, str]:
         """Decode an OCPP message from a string"""
-        j = json.loads(message)
-        return [j[0], j[1]]
+        try:
+            j = json.loads(message)
+            action = j[2] if j[0] == OCPPMessageType.Call else None
+            return [j[0], j[1], action]
+        except (json.JSONDecodeError, IndexError, KeyError):
+            return [None, None, None]
+
+    @staticmethod
+    def repair_message(message: str) -> str:
+        """Apply Grizzl-E firmware workarounds to a raw OCPP frame."""
+        # Grizzl-E firmware bug: missing '[' before ']' in configurationKey array.
+        # Observed: {"configurationKey":],...}
+        repaired = re.sub(r'"configurationKey":\](?=,)', '"configurationKey":[]', message)
+        if repaired != message:
+            logger.warning("Applied Grizzl-E configurationKey repair")
+        return repaired
+
+    @staticmethod
+    def repair_change_configuration_response(message: str) -> str:
+        """Grizzl-E returns NotSupported for ChangeConfiguration; normalize to Rejected."""
+        repaired = message.replace('"NotSupported"', '"Rejected"')
+        if repaired != message:
+            logger.warning("Replaced NotSupported with Rejected in ChangeConfiguration response")
+        return repaired
 
     def __init__(self, websocket: websockets.asyncio.server.ServerConnection, charger_id: str):
         # Store the websocket for later     
@@ -51,14 +74,13 @@ class OCPP2WProxy:
         self.ws = websocket
         self.charger_id = charger_id
 
-        # Chech that charger id looks reasonable
-        if not charger_id.isalnum():
-            logger.error(f"Charger ID '{charger_id}' is not alphanumeric")
-            raise Exception("Charger ID is not alphanumeric")
+        if not re.match(r'^[A-Za-z0-9_-]+$', charger_id):
+            logger.error(f"Charger ID '{charger_id}' contains invalid characters")
+            raise Exception("Charger ID contains invalid characters")
 
-        # Initialize table of CSMS call ids sent to the charger in order to respond back 
-        self.primary_call_ids = set()
-        self.secondary_call_ids = set()
+        # Maps in-flight CSMS call IDs to their action name for response routing/repair
+        self.primary_call_ids: dict[str, str] = {}
+        self.secondary_call_ids: dict[str, str] = {}
 
         # Insert new OCPP2WProxy instance in the (static) dict of instances.
         self.proxy_list[charger_id] = self
@@ -73,15 +95,6 @@ class OCPP2WProxy:
         except Exception as e:
             pass # Ignore exceptions
 
-    @staticmethod
-    async def check_delete_old(charger_id: str):
-        """Check if there are any old instances of this charger in the proxy list"""
-        if charger_id in OCPP2WProxy.proxy_list:
-            logger.info(f"Charger ID {charger_id} already exists. Closing and deleting")
-            proxy: OCPP2WProxy = OCPP2WProxy.proxy_list[charger_id]
-            await proxy.close()
-            del OCPP2WProxy.proxy_list[charger_id]
-
     async def run(self):
         """Main loop for this proxy. This is where all the magic happens."""
 
@@ -92,7 +105,7 @@ class OCPP2WProxy:
             headers["Authorization"] = self.ws.request.headers["Authorization"]
             logger.debug(f'Authorization header set to {headers["Authorization"]}')
         user_agent = self.ws.request.headers.get("User-Agent", None) 
-        subprotocols = self.ws.request.headers.get("Sec-WebSocket-Protocol", ["ocpp1.6"])
+        subprotocols = self.ws.request.headers.get("Sec-WebSocket-Protocol", "ocpp1.6")
         primary_url = config.get("ext-server", "server") + "/" + self.charger_id
         if config.has_option("ext-server", "secondary_server"):
             secondary_url = config.get("ext-server", "secondary_server") + "/" + self.charger_id
@@ -130,7 +143,7 @@ class OCPP2WProxy:
             self.tasks.append(asyncio.create_task(self.receive_primary_messages()))
             if self.secondary_connection is not None:
                 self.tasks.append(asyncio.create_task(self.receive_secondary_messages()))
-            #self.tasks.append(asyncio.create_task(self.watchdog()))
+            self.tasks.append(asyncio.create_task(self.watchdog()))
 
             # Wait for tasks to complete
             done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -160,28 +173,32 @@ class OCPP2WProxy:
     async def receive_charger_messages(self):
         try:
             while True:
-                # Wait for a message from the charger
                 message = await self.ws.recv()
-                # Process the received message
+                self._last_charger_update = time.time()
                 logger.info(f"{self.charger_id} ^ : {message}")
 
-                # Now, if this is an OCPP CallResult (3) or CallError (4), we need to send it back to the 
-                # CSMS (primary or secondary) that issued the command
-                [message_type, message_id] = OCPP2WProxy.decode_ocpp_message(message)
+                message = OCPP2WProxy.repair_message(message)
+                [message_type, message_id, _] = OCPP2WProxy.decode_ocpp_message(message)
+                if message_type is None:
+                    logger.warning(f"{self.charger_id} ^: Unparseable frame after repair attempt, dropping: {message[:120]}")
+                    continue
 
-                # If it is a Call (2), we will send it to both primary and secondary (if connected)
                 if message_type == OCPPMessageType.Call:
                     await self.primary_connection.send(message)
                     if self.secondary_connection:
                         await self.secondary_connection.send(message)
                 elif message_type == OCPPMessageType.CallResult or message_type == OCPPMessageType.CallError:
                     if message_id in self.primary_call_ids:
+                        action = self.primary_call_ids.pop(message_id)
+                        if action == "ChangeConfiguration":
+                            message = OCPP2WProxy.repair_change_configuration_response(message)
                         logger.info(f"{self.charger_id} ^ : Result/Error forwarded to primary")
-                        self.primary_call_ids.remove(message_id)
                         await self.primary_connection.send(message)
                     elif message_id in self.secondary_call_ids:
+                        action = self.secondary_call_ids.pop(message_id)
+                        if action == "ChangeConfiguration":
+                            message = OCPP2WProxy.repair_change_configuration_response(message)
                         logger.info(f"{self.charger_id} ^ : Result/Error forwarded to secondary")
-                        self.secondary_call_ids.remove(message_id)
                         await self.secondary_connection.send(message)
                     else:
                         logger.error(f"{self.charger_id} ^: Received CallResult/CallError against unknown message id {message_id}")
@@ -193,16 +210,16 @@ class OCPP2WProxy:
     async def receive_primary_messages(self):
         try:
             while True:
-                # Wait for a message from the primary server
                 message = await self.primary_connection.recv()
                 logger.info(f"{self.charger_id} v (prim) : {message}")
 
-                [message_type, message_id] = OCPP2WProxy.decode_ocpp_message(message)
+                [message_type, message_id, action] = OCPP2WProxy.decode_ocpp_message(message)
+                if message_type is None:
+                    logger.warning(f"{self.charger_id}: Unparseable frame from primary, dropping")
+                    continue
                 if message_type == OCPPMessageType.Call:
-                    # Record the message_id 
-                    self.primary_call_ids.add(message_id)
+                    self.primary_call_ids[message_id] = action
 
-                # Send message to the charger
                 await self.ws.send(message)
         except Exception as e:
             logger.error(f"{self.charger_id} Error in receive_primary_messages: {e}")
@@ -210,16 +227,16 @@ class OCPP2WProxy:
     async def receive_secondary_messages(self):
         try:
             while True:
-                # Wait for a message from the secondary server
                 message = await self.secondary_connection.recv()
                 logger.info(f"{self.charger_id} v (sec) : {message}")
 
-                [message_type, message_id] = OCPP2WProxy.decode_ocpp_message(message)
+                [message_type, message_id, action] = OCPP2WProxy.decode_ocpp_message(message)
+                if message_type is None:
+                    logger.warning(f"{self.charger_id}: Unparseable frame from secondary, dropping")
+                    continue
                 if message_type == OCPPMessageType.Call:
-                    # Record the message_id 
-                    self.secondary_call_ids.add(message_id)
-                    # Send it to the charger
-                    await self.ws.send(message) 
+                    self.secondary_call_ids[message_id] = action
+                    await self.ws.send(message)
                 # Note! We do not forward CallResults or CallErrors from the secondary server
                 # These are silently ignored.
         except Exception as e:
@@ -229,16 +246,16 @@ class OCPP2WProxy:
         """Watch time vs. timestamp updated by receiving messages from charger."""
         while True:
             # And ... sleep
-            await asyncio.sleep(config.getint("host", "watchdog_interval", 30))
+            await asyncio.sleep(config.getint("host", "watchdog_interval", fallback=30))
 
             elapsed = time.time() - self._last_charger_update
-            if elapsed > config.getint("host", "watchdog_stale", 300):
+            if elapsed > config.getint("host", "watchdog_stale", fallback=300):
                 logger.error(f"{self.charger_id} Watch dog no for {elapsed} seconds. Closing connections")
                 return
 
 # Connection handler (charger connects)
 async def on_connect(websocket: websockets.asyncio.server.ServerConnection):
-    logger.debug('Connection request', websocket.request)
+    logger.debug(f'Connection request: {websocket.request}')
     # Determine charger_id (final part of path)
     path = websocket.request.path
     charger_id = path.strip("/")
@@ -259,7 +276,7 @@ async def on_connect(websocket: websockets.asyncio.server.ServerConnection):
     except Exception as e:
         logger.error(f'{charger_id} Error creating OCPP2WProxy: {e}')
     finally:
-        logger.info("f{charger_id} closed/done")
+        logger.info(f"{charger_id} closed/done")
 
 
 # Main. Decode arguments, setup handler
