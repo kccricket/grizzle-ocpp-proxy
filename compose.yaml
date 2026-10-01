@@ -1,6 +1,10 @@
 services:
-  ocpp-proxy:
-    build: .
-    restart: always
+  grizzle-ocpp-proxy:
+    image: ghcr.io/kccricket/grizzle-ocpp-proxy:latest
+    # build: ./grizzle-ocpp-proxy
+    restart: unless-stopped
     ports:
       - 8321:8321
+    environment:
+      CSMS_URL: ws://homeassistant.local:9000
+      # LOG_LEVEL: debug
