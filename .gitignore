@@ -6,4 +6,5 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+.claude/
 CLAUDE.local.md
