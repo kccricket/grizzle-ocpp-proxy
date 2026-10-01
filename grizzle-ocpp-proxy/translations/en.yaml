@@ -1,0 +1,25 @@
+configuration:
+  csms_url:
+    name: CSMS URL
+    description: >-
+      Where the proxy forwards the charger's traffic: the OCPP server in Home Assistant.
+      Leave as ws://homeassistant:9000 for the Home Assistant OCPP integration on its default
+      port. The charger's ID is appended to this URL.
+  log_level:
+    name: Log level
+    description: >-
+      Use debug to see every OCPP frame passing through the proxy.
+  watchdog_stale:
+    name: Idle time before a ping (seconds)
+    description: >-
+      How long the charger can go without sending any OCPP message before the proxy pings it.
+      The connection is closed only if that ping goes unanswered, so a long idle time on its own
+      is harmless. The Grizzl-E sends a heartbeat only once an hour. Default 300.
+  watchdog_interval:
+    name: Idle check interval (seconds)
+    description: How often the proxy checks for an idle charger. Default 30.
+  ping_timeout:
+    name: Ping timeout (seconds)
+    description: How long to wait for the charger to answer a ping. Default 60.
+network:
+  8321/tcp: Charger connection (OCPP WebSocket)

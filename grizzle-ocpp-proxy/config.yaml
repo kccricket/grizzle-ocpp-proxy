@@ -1,0 +1,24 @@
+name: Grizzl-E OCPP Proxy
+version: "0.3.0"
+slug: grizzle_ocpp_proxy
+description: Repairs the OCPP frames a Grizzl-E EV charger gets wrong, so Home Assistant's OCPP integration works reliably
+url: https://github.com/kccricket/grizzle-ocpp-proxy
+arch:
+  - aarch64
+  - amd64
+image: ghcr.io/kccricket/{arch}-grizzle-ocpp-proxy
+startup: services
+boot: auto
+ports:
+  8321/tcp: 8321
+ports_description:
+  8321/tcp: Charger connection (OCPP WebSocket)
+options:
+  csms_url: ws://homeassistant:9000
+  log_level: info
+schema:
+  csms_url: match(^wss?://[^\s]+$)
+  log_level: list(debug|info|warning|error)
+  watchdog_stale: int(30,86400)?
+  watchdog_interval: int(5,3600)?
+  ping_timeout: int(5,600)?

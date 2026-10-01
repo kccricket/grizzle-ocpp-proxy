@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 jobs:
   test:
@@ -19,3 +20,11 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: pytest
+
+  lint-app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: frenck/action-addon-linter@v2
+        with:
+          path: ./grizzle-ocpp-proxy
