@@ -1,32 +1,37 @@
 # ocpp-2w-proxy
 
-A 2 way OCPP proxy (can also be used as a 1-way simple proxy).
+A fix-up proxy for the Grizzl-E EV charger. It sits between the charger and a CSMS
+(for example the Home Assistant OCPP integration) and repairs the OCPP frames the
+Grizzl-E firmware gets wrong.
 
-ocpp-2w-proxy allows chargers (one or more) to establish connections not just with one central management system (server), but to two.
-This is useful for example if a setup requires that the charger wants to connect to an official server (e.g. for billing purposes), 
-and at the same time the happy EV person would like to also view and control the charger from e.g. Home Assistant.
+(The name is a holdover from the upstream two-way proxy this was forked from.
+It now talks to a single CSMS.)
 
-The proxy works be defining a primary and a secondary server. This governs the way in which the proxy will forward messages upstream
-and downstream.
+## What it fixes
 
-The rules are as follows:
-1. All Calls (OCPP type 2) from the charger is forwarded to both the primary and the secondary server.
-2. All Replies (OCPP type 3) or Errors (OCPP type 4) received from the primary server are forwarded to the charger.
-3. All Replies (OCPP type 3) or Errors (OCPP type 4) received from the secondary server are ignored and not forwarded to the charger.
-4. All Calls (OCPP type 2) received from either the primary or secondary server is forward to the charger. The message_id is noted against the server.
-5. All Replies (OCPP type 3) or Errors (OCPP type 4) received from the charger is forwarded to either the primary OR the secondary server depending on which one sent it (based on message_id noted in step 4).
+- **Malformed `GetConfiguration` replies.** The charger sends `"configurationKey":]` with the
+  opening `[` missing when it doesn't know a key. This is invalid JSON, so HA never receives
+  the reply and waits out its 10 s timeout. The proxy repairs it to `"configurationKey":[]`.
+- **`NotSupported` in `ChangeConfiguration` replies.** Replaced with `Rejected`, the status
+  the OCPP 1.6 spec allows for a refused change.
+- **Unparseable frames** are logged and dropped instead of taking the connection down.
+- **Stale connections.** The charger reconnects without closing its old connection, so a new
+  connection replaces any existing one for the same charger ID. A watchdog pings the charger
+  if it has been silent for `watchdog_stale` seconds, and closes the connection only if the
+  ping goes unanswered. The charger's heartbeat interval is 3600 s, so silence alone doesn't
+  mean it's dead.
 
-The proxy will also keep a watch dog of stale connections. If a connection is not seen for more than `watchdog_stale` seconds, the connection will be closed and removed from the list.
-
+Authorization and User-Agent headers from the charger are forwarded to the CSMS.
 
 ## Usage
 
-Review and update configuration in `ocpp-2w-proxy.ini`. Start the proxy with:
+Set `server` in `ocpp-2w-proxy.ini` to your CSMS, then start the proxy with:
 
-`python ocpp_2w_proxy.py`
+`python ocpp-2w-proxy.py`
+
+Point the charger at `ws://<proxy-host>:8321/<charger-id>`. The charger ID from the path is
+appended to the CSMS URL.
 
 ## Docker
 
-`Dockerfile` and `compose.yaml` files are included for completeness.
-
- 
+`Dockerfile` and `compose.yaml` files are included.

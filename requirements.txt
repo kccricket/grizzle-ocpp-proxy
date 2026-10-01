@@ -1,3 +1,1 @@
-cryptography
-pydantic==1.*
 websockets

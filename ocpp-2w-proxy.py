@@ -1,22 +1,22 @@
-# 2 way OCPP proxy (can also be used as a 1-way simple proxy)
+# OCPP fix-up proxy for the Grizzl-E EV charger.
+# Sits between the charger and a CSMS (e.g. the Home Assistant OCPP integration) and repairs
+# the frames the charger firmware gets wrong.
 
 import asyncio
 import logging
 import re
 import time
-from typing import Tuple
+from typing import Optional, Tuple
 import json
 
 import websockets
-import websockets.asyncio
 import websockets.asyncio.server
 
 from enum import IntEnum
-import ssl
 import argparse
 import configparser
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 config = configparser.ConfigParser()
 
@@ -26,29 +26,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger("proxy")
 
-class OCPP2WProxy: # Forward declaration
-    pass
+SUBPROTOCOL = "ocpp1.6"
 
 class OCPPMessageType(IntEnum):
     Call = 2
     CallResult = 3
     CallError = 4
 
-# main class
-class OCPP2WProxy:
-    # Static dict of OCPP2WProxy instances. key is charger_id
-    proxy_list: dict[str, OCPP2WProxy] = {}
+class OCPPProxy:
+    # Static dict of OCPPProxy instances. key is charger_id
+    proxy_list: dict[str, "OCPPProxy"] = {}
 
     # Utility functions
     @staticmethod
-    def decode_ocpp_message(message: str) -> Tuple[OCPPMessageType, str]:
+    def decode_ocpp_message(message: str) -> Tuple[Optional[int], Optional[str], Optional[str]]:
         """Decode an OCPP message from a string"""
         try:
             j = json.loads(message)
             action = j[2] if j[0] == OCPPMessageType.Call else None
-            return [j[0], j[1], action]
-        except (json.JSONDecodeError, IndexError, KeyError):
-            return [None, None, None]
+            return (j[0], j[1], action)
+        except (json.JSONDecodeError, IndexError, KeyError, TypeError):
+            return (None, None, None)
 
     @staticmethod
     def repair_message(message: str) -> str:
@@ -69,81 +67,58 @@ class OCPP2WProxy:
         return repaired
 
     def __init__(self, websocket: websockets.asyncio.server.ServerConnection, charger_id: str):
-        # Store the websocket for later     
         logger.debug(websocket.request)
         self.ws = websocket
         self.charger_id = charger_id
+        self.csms_connection = None
 
         if not re.match(r'^[A-Za-z0-9_-]+$', charger_id):
             logger.error(f"Charger ID '{charger_id}' contains invalid characters")
             raise Exception("Charger ID contains invalid characters")
 
-        # Maps in-flight CSMS call IDs to their action name for response routing/repair
-        self.primary_call_ids: dict[str, str] = {}
-        self.secondary_call_ids: dict[str, str] = {}
+        # Maps in-flight CSMS call IDs to their action name for response repair
+        self.call_ids: dict[str, str] = {}
 
-        # Insert new OCPP2WProxy instance in the (static) dict of instances.
+        # Insert new OCPPProxy instance in the (static) dict of instances.
         self.proxy_list[charger_id] = self
 
     async def close(self):
-        """Close all connections to the charger and primary, secondary server"""
+        """Close the connections to the charger and the CSMS"""
         try:
             await self.ws.close()
-            await self.primary_connection.close()
-            if self.secondary_connection:
-                await self.secondary_connection.close()
-        except Exception as e:
+            if self.csms_connection:
+                await self.csms_connection.close()
+        except Exception:
             pass # Ignore exceptions
 
     async def run(self):
-        """Main loop for this proxy. This is where all the magic happens."""
+        """Connect to the CSMS and shuttle messages until either side goes away."""
 
-        # Create connections to the two CSMSes.
         # Forward any available Authorization and User-Agent headers
         headers = {}
         if "Authorization" in self.ws.request.headers:
             headers["Authorization"] = self.ws.request.headers["Authorization"]
             logger.debug(f'Authorization header set to {headers["Authorization"]}')
-        user_agent = self.ws.request.headers.get("User-Agent", None) 
-        subprotocols = self.ws.request.headers.get("Sec-WebSocket-Protocol", "ocpp1.6")
-        primary_url = config.get("ext-server", "server") + "/" + self.charger_id
-        if config.has_option("ext-server", "secondary_server"):
-            secondary_url = config.get("ext-server", "secondary_server") + "/" + self.charger_id
-        else:
-            secondary_url = None    
+        user_agent = self.ws.request.headers.get("User-Agent", None)
+        csms_url = config.get("ext-server", "server") + "/" + self.charger_id
 
         try:
-            self.primary_connection = await websockets.connect(
-                uri=primary_url,
+            self.csms_connection = await websockets.connect(
+                uri=csms_url,
                 user_agent_header=user_agent,
                 additional_headers=headers,
-                subprotocols=[subprotocols],
+                subprotocols=[SUBPROTOCOL],
             )
-            logger.info(f"Connected to primary server @ {primary_url}")
+            logger.info(f"{self.charger_id} Connected to CSMS @ {csms_url}")
 
-            # Connect to secondary server if it is enabled.
-            if secondary_url:
-                self.secondary_connection = await websockets.connect(
-                    uri=secondary_url,
-                    user_agent_header=user_agent,
-                    additional_headers=headers,
-                    subprotocols=[subprotocols],
-                )
-                logger.info(f"{self.charger_id} Connected to secondary server @ {secondary_url}")
-            else:
-                self.secondary_connection = None
-                logger.info(f"{self.charger_id} Secondary server not enabled")
-            
-            # Create tasks to handle the charger. Each task each to handle receiving messages from
-            # the charger, and the (one or two) CSMSes, and finally a watch dog task to take down
-            # connections if connection goes stale.
+            # One task per direction, plus a watch dog task to take down the
+            # connections if the charger goes stale.
             self._last_charger_update = time.time()
-            self.tasks = []
-            self.tasks.append(asyncio.create_task(self.receive_charger_messages()))
-            self.tasks.append(asyncio.create_task(self.receive_primary_messages()))
-            if self.secondary_connection is not None:
-                self.tasks.append(asyncio.create_task(self.receive_secondary_messages()))
-            self.tasks.append(asyncio.create_task(self.watchdog()))
+            self.tasks = [
+                asyncio.create_task(self.receive_charger_messages()),
+                asyncio.create_task(self.receive_csms_messages()),
+                asyncio.create_task(self.watchdog()),
+            ]
 
             # Wait for tasks to complete
             done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -163,11 +138,11 @@ class OCPP2WProxy:
         except websockets.exceptions.ConnectionClosedError as e:
             logger.error(f"{self.charger_id} Connection closed unexpectedly: {e}")
         except websockets.exceptions.InvalidHandshake:
-            logger.error(f"{self.charger_id} Handshake with the external server failed")
+            logger.error(f"{self.charger_id} Handshake with the CSMS failed")
         except Exception as e:
             logger.error(f"{self.charger_id} Unexpected error: {e}")
         finally:
-            # Always close stuff. close is well tempered, so can close even if not stablished
+            # Always close stuff. close is well tempered, so can close even if not established
             await self.close()
 
     async def receive_charger_messages(self):
@@ -177,75 +152,39 @@ class OCPP2WProxy:
                 self._last_charger_update = time.time()
                 logger.info(f"{self.charger_id} ^ : {message}")
 
-                message = OCPP2WProxy.repair_message(message)
-                [message_type, message_id, _] = OCPP2WProxy.decode_ocpp_message(message)
+                message = OCPPProxy.repair_message(message)
+                (message_type, message_id, _) = OCPPProxy.decode_ocpp_message(message)
                 if message_type is None:
                     logger.warning(f"{self.charger_id} ^: Unparseable frame after repair attempt, dropping: {message[:120]}")
                     continue
 
-                if message_type == OCPPMessageType.Call:
-                    await self.primary_connection.send(message)
-                    if self.secondary_connection:
-                        await self.secondary_connection.send(message)
-                elif message_type == OCPPMessageType.CallResult or message_type == OCPPMessageType.CallError:
-                    if message_id in self.primary_call_ids:
-                        action = self.primary_call_ids.pop(message_id)
-                        if action == "ChangeConfiguration":
-                            message = OCPP2WProxy.repair_change_configuration_response(message)
-                        logger.info(f"{self.charger_id} ^ : Result/Error forwarded to primary")
-                        await self.primary_connection.send(message)
-                    elif message_id in self.secondary_call_ids:
-                        action = self.secondary_call_ids.pop(message_id)
-                        if action == "ChangeConfiguration":
-                            message = OCPP2WProxy.repair_change_configuration_response(message)
-                        logger.info(f"{self.charger_id} ^ : Result/Error forwarded to secondary")
-                        await self.secondary_connection.send(message)
-                    else:
-                        logger.error(f"{self.charger_id} ^: Received CallResult/CallError against unknown message id {message_id}")
-                else:
-                    logger.error(f"{self.charger_id} ^: Unknown message type {message_type}")
+                if message_type in (OCPPMessageType.CallResult, OCPPMessageType.CallError):
+                    if self.call_ids.pop(message_id, None) == "ChangeConfiguration":
+                        message = OCPPProxy.repair_change_configuration_response(message)
+                await self.csms_connection.send(message)
         except Exception as e:
             logger.error(f"{self.charger_id} Error in receive_charger_messages: {e}")
 
-    async def receive_primary_messages(self):
+    async def receive_csms_messages(self):
         try:
             while True:
-                message = await self.primary_connection.recv()
-                logger.info(f"{self.charger_id} v (prim) : {message}")
+                message = await self.csms_connection.recv()
+                logger.info(f"{self.charger_id} v : {message}")
 
-                [message_type, message_id, action] = OCPP2WProxy.decode_ocpp_message(message)
+                (message_type, message_id, action) = OCPPProxy.decode_ocpp_message(message)
                 if message_type is None:
-                    logger.warning(f"{self.charger_id}: Unparseable frame from primary, dropping")
+                    logger.warning(f"{self.charger_id} v: Unparseable frame from CSMS, dropping")
                     continue
                 if message_type == OCPPMessageType.Call:
-                    self.primary_call_ids[message_id] = action
+                    self.call_ids[message_id] = action
 
                 await self.ws.send(message)
         except Exception as e:
-            logger.error(f"{self.charger_id} Error in receive_primary_messages: {e}")
-
-    async def receive_secondary_messages(self):
-        try:
-            while True:
-                message = await self.secondary_connection.recv()
-                logger.info(f"{self.charger_id} v (sec) : {message}")
-
-                [message_type, message_id, action] = OCPP2WProxy.decode_ocpp_message(message)
-                if message_type is None:
-                    logger.warning(f"{self.charger_id}: Unparseable frame from secondary, dropping")
-                    continue
-                if message_type == OCPPMessageType.Call:
-                    self.secondary_call_ids[message_id] = action
-                    await self.ws.send(message)
-                # Note! We do not forward CallResults or CallErrors from the secondary server
-                # These are silently ignored.
-        except Exception as e:
-            logger.error(f"{self.charger_id} Error in receive_secondary_messages: {e}")
+            logger.error(f"{self.charger_id} Error in receive_csms_messages: {e}")
 
     async def watchdog(self):
-        """Watch time vs. timestamp updated by receiving messages from charger."""
+        """Close the connections if the charger goes silent and stops answering pings."""
         while True:
-            # And ... sleep
             await asyncio.sleep(config.getint("host", "watchdog_interval", fallback=30))
 
             elapsed = time.time() - self._last_charger_update
@@ -271,19 +210,16 @@ async def on_connect(websocket: websockets.asyncio.server.ServerConnection):
     logger.info(f'{charger_id} connection request')
 
     try:
-        # Delete any existing charger setup
-        if charger_id in OCPP2WProxy.proxy_list:
-            await OCPP2WProxy.proxy_list[charger_id].close()
-            del OCPP2WProxy.proxy_list[charger_id]
+        # The charger reconnects without closing a stale connection first; drop the old one.
+        if charger_id in OCPPProxy.proxy_list:
+            await OCPPProxy.proxy_list[charger_id].close()
+            del OCPPProxy.proxy_list[charger_id]
 
-        # Setup
-        proxy = OCPP2WProxy(websocket=websocket, charger_id=charger_id)
-
-        # Connect and run proxy operations
+        proxy = OCPPProxy(websocket=websocket, charger_id=charger_id)
         await proxy.run()
 
     except Exception as e:
-        logger.error(f'{charger_id} Error creating OCPP2WProxy: {e}')
+        logger.error(f'{charger_id} Error creating OCPPProxy: {e}')
     finally:
         logger.info(f"{charger_id} closed/done")
 
@@ -291,7 +227,7 @@ async def on_connect(websocket: websockets.asyncio.server.ServerConnection):
 # Main. Decode arguments, setup handler
 async def main():
     parser = argparse.ArgumentParser(
-        description='ocpp-2w-proxy: A two way OCPP proxy')
+        description='ocpp-2w-proxy: a fix-up proxy for the Grizzl-E EV charger')
     parser.add_argument('--version', action='version',
                         version=f'%(prog)s {__version__}')
     parser.add_argument(
@@ -302,7 +238,6 @@ async def main():
     )
     args = parser.parse_args()
 
-    # Read config. config object is then available (via config import) to all.
     logger.warning(f"Reading config from {args.config}")
     config.read(args.config)
 
@@ -311,33 +246,17 @@ async def main():
         logger.warning(f'Setting log level for {logger_name} to {config.get("logging", logger_name)}')
         logging.getLogger(logger_name).setLevel(level=config.get("logging", logger_name))
 
-    # Get host config
     host = config.get("host", "addr")
     port = config.get("host", "port")
-    cert_chain = config.get("host", "cert_chain", fallback=None)
-    cert_key = config.get("host", "cert_key", fallback=None)
-    logger.debug(f"host: {host}, port: {port}, cert_chain: {cert_chain}, cert_key: {cert_key}")
+    logger.debug(f"host: {host}, port: {port}")
 
-    # Start server, either ws:// or wss://
-    if cert_chain and cert_key:
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ssl_context.load_cert_chain(certfile=cert_chain, keyfile=cert_key)
-        server = await websockets.serve(
-            on_connect,
-            host,
-            port,
-            subprotocols=["ocpp1.6", "ocpp2.0.1"],
-            ssl=ssl_context,
-            ping_timeout=config.getint("host", "ping_timeout"),
-        )
-    else:
-        server = await websockets.serve(
-            on_connect,
-            host,
-            port,
-            subprotocols=["ocpp1.6", "ocpp2.0.1"],
-            ping_timeout=config.getint("host", "ping_timeout"),
-        )
+    server = await websockets.serve(
+        on_connect,
+        host,
+        port,
+        subprotocols=[SUBPROTOCOL],
+        ping_timeout=config.getint("host", "ping_timeout"),
+    )
 
     logger.info("Proxy ready. Waiting for new connections...")
     await server.wait_closed()

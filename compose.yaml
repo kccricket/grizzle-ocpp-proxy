@@ -1,10 +1,6 @@
 services:
-  balanz:
-    image: ocpp-2w-proxy
+  ocpp-proxy:
+    build: .
     restart: always
     ports:
       - 8321:8321
-    environment:
-      - TZ=Europe/Copenhagen
-    command: [ "python", "ocpp-2w-proxy.py"]
-
