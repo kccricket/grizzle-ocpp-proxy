@@ -28,10 +28,12 @@ logger = logging.getLogger("proxy")
 
 SUBPROTOCOL = "ocpp1.6"
 
+
 class OCPPMessageType(IntEnum):
     Call = 2
     CallResult = 3
     CallError = 4
+
 
 class OCPPProxy:
     # Static dict of OCPPProxy instances. key is charger_id
@@ -72,7 +74,7 @@ class OCPPProxy:
         self.charger_id = charger_id
         self.csms_connection = None
 
-        if not re.match(r'^[A-Za-z0-9_-]+$', charger_id):
+        if not re.match(r"^[A-Za-z0-9_-]+$", charger_id):
             logger.error(f"Charger ID '{charger_id}' contains invalid characters")
             raise Exception("Charger ID contains invalid characters")
 
@@ -89,7 +91,7 @@ class OCPPProxy:
             if self.csms_connection:
                 await self.csms_connection.close()
         except Exception:
-            pass # Ignore exceptions
+            pass  # Ignore exceptions
 
     async def run(self):
         """Connect to the CSMS and shuttle messages until either side goes away."""
@@ -98,7 +100,7 @@ class OCPPProxy:
         headers = {}
         if "Authorization" in self.ws.request.headers:
             headers["Authorization"] = self.ws.request.headers["Authorization"]
-            logger.debug(f'Authorization header set to {headers["Authorization"]}')
+            logger.debug(f"Authorization header set to {headers['Authorization']}")
         user_agent = self.ws.request.headers.get("User-Agent", None)
         csms_url = config.get("ext-server", "server") + "/" + self.charger_id
 
@@ -127,7 +129,9 @@ class OCPPProxy:
             for task in done:
                 e = task.exception()
                 if e:
-                    logger.warning(f"{self.charger_id} (Not serious - likely connection loss) Task {task} raised exception {e} related to charger ")
+                    logger.warning(
+                        f"{self.charger_id} (Not serious - likely connection loss) Task {task} raised exception {e} related to charger "
+                    )
 
             # Cancel any remaining tasks
             for task in pending:
@@ -155,7 +159,9 @@ class OCPPProxy:
                 message = OCPPProxy.repair_message(message)
                 (message_type, message_id, _) = OCPPProxy.decode_ocpp_message(message)
                 if message_type is None:
-                    logger.warning(f"{self.charger_id} ^: Unparseable frame after repair attempt, dropping: {message[:120]}")
+                    logger.warning(
+                        f"{self.charger_id} ^: Unparseable frame after repair attempt, dropping: {message[:120]}"
+                    )
                     continue
 
                 if message_type in (OCPPMessageType.CallResult, OCPPMessageType.CallError):
@@ -194,20 +200,27 @@ class OCPPProxy:
                 # without surfacing them. So only give up if the charger fails a ping of our own.
                 try:
                     pong_waiter = await self.ws.ping()
-                    await asyncio.wait_for(pong_waiter, timeout=config.getint("host", "ping_timeout", fallback=60))
+                    await asyncio.wait_for(
+                        pong_waiter, timeout=config.getint("host", "ping_timeout", fallback=60)
+                    )
                 except Exception as e:
-                    logger.error(f"{self.charger_id} Watch dog: no OCPP traffic for {elapsed:.0f} seconds and ping failed ({e!r}). Closing connections")
+                    logger.error(
+                        f"{self.charger_id} Watch dog: no OCPP traffic for {elapsed:.0f} seconds and ping failed ({e!r}). Closing connections"
+                    )
                     return
-                logger.debug(f"{self.charger_id} Watch dog: idle for {elapsed:.0f} seconds but charger answered ping")
+                logger.debug(
+                    f"{self.charger_id} Watch dog: idle for {elapsed:.0f} seconds but charger answered ping"
+                )
                 self._last_charger_update = time.time()
+
 
 # Connection handler (charger connects)
 async def on_connect(websocket: websockets.asyncio.server.ServerConnection):
-    logger.debug(f'Connection request: {websocket.request}')
+    logger.debug(f"Connection request: {websocket.request}")
     # Determine charger_id (final part of path)
     path = websocket.request.path
     charger_id = path.strip("/")
-    logger.info(f'{charger_id} connection request')
+    logger.info(f"{charger_id} connection request")
 
     try:
         # The charger reconnects without closing a stale connection first; drop the old one.
@@ -219,7 +232,7 @@ async def on_connect(websocket: websockets.asyncio.server.ServerConnection):
         await proxy.run()
 
     except Exception as e:
-        logger.error(f'{charger_id} Error creating OCPPProxy: {e}')
+        logger.error(f"{charger_id} Error creating OCPPProxy: {e}")
     finally:
         logger.info(f"{charger_id} closed/done")
 
@@ -227,9 +240,9 @@ async def on_connect(websocket: websockets.asyncio.server.ServerConnection):
 # Main. Decode arguments, setup handler
 async def main():
     parser = argparse.ArgumentParser(
-        description='ocpp-2w-proxy: a fix-up proxy for the Grizzl-E EV charger')
-    parser.add_argument('--version', action='version',
-                        version=f'%(prog)s {__version__}')
+        description="ocpp-2w-proxy: a fix-up proxy for the Grizzl-E EV charger"
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--config",
         type=str,
@@ -243,7 +256,9 @@ async def main():
 
     # Adjust log levels
     for logger_name in config["logging"]:
-        logger.warning(f'Setting log level for {logger_name} to {config.get("logging", logger_name)}')
+        logger.warning(
+            f"Setting log level for {logger_name} to {config.get('logging', logger_name)}"
+        )
         logging.getLogger(logger_name).setLevel(level=config.get("logging", logger_name))
 
     host = config.get("host", "addr")
