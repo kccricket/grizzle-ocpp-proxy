@@ -43,7 +43,7 @@ jobs:
       # One image per architecture, named the way the Supervisor expects: the app's
       # `image: ghcr.io/kccricket/{arch}-grizzle-ocpp-proxy` at tag `version`.
       - name: Build aarch64
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: grizzle-ocpp-proxy
           platforms: linux/arm64
@@ -55,7 +55,7 @@ jobs:
             ghcr.io/${{ env.OWNER }}/aarch64-${{ env.NAME }}:latest
 
       - name: Build amd64
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: grizzle-ocpp-proxy
           platforms: linux/amd64
