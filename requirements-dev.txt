@@ -1,0 +1,4 @@
+-r grizzle-ocpp-proxy/requirements.txt
+pytest>=8
+pytest-asyncio>=1
+ruff>=0.8
