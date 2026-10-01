@@ -1,0 +1,9 @@
+*.ini
+*.pcap
+*.pcapng
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+CLAUDE.local.md
