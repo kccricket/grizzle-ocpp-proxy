@@ -250,8 +250,17 @@ class OCPP2WProxy:
 
             elapsed = time.time() - self._last_charger_update
             if elapsed > config.getint("host", "watchdog_stale", fallback=300):
-                logger.error(f"{self.charger_id} Watch dog no for {elapsed} seconds. Closing connections")
-                return
+                # A healthy idle charger can go much longer than this between OCPP messages
+                # (the Grizzl-E heartbeat is 3600s), and websockets answers its pings internally
+                # without surfacing them. So only give up if the charger fails a ping of our own.
+                try:
+                    pong_waiter = await self.ws.ping()
+                    await asyncio.wait_for(pong_waiter, timeout=config.getint("host", "ping_timeout", fallback=60))
+                except Exception as e:
+                    logger.error(f"{self.charger_id} Watch dog: no OCPP traffic for {elapsed:.0f} seconds and ping failed ({e!r}). Closing connections")
+                    return
+                logger.debug(f"{self.charger_id} Watch dog: idle for {elapsed:.0f} seconds but charger answered ping")
+                self._last_charger_update = time.time()
 
 # Connection handler (charger connects)
 async def on_connect(websocket: websockets.asyncio.server.ServerConnection):
