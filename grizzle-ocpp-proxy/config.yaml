@@ -8,7 +8,6 @@ arch:
   - amd64
 image: ghcr.io/kccricket/{arch}-grizzle-ocpp-proxy
 startup: services
-boot: auto
 ports:
   8321/tcp: 8321
 ports_description:
