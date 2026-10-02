@@ -28,6 +28,7 @@ treat the charger as a new device.
 import argparse
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,13 +45,23 @@ def get_info(host: str) -> dict:
         return json.load(r)
 
 
-def post_ocpp(host: str, ocpp_url: str, auth_key: str, station_id: str) -> dict:
-    body = urllib.parse.urlencode(
+def encode_body(ocpp_url: str, auth_key: str, station_id: str) -> bytes:
+    """Build the request body exactly as the charger's own page does.
+
+    The page's sendReq() runs JSON.stringify() on a payload that is already a urlencoded string, so
+    the firmware receives the form wrapped in literal double quotes. Its parser relies on that: sent
+    bare, the first character of the URL and the last character of the station ID are dropped.
+    """
+    form = urllib.parse.urlencode(
         {"ocppUrl": ocpp_url, "authKey": auth_key, "stationId": station_id}
-    ).encode()
+    )
+    return json.dumps(form).encode()
+
+
+def post_ocpp(host: str, ocpp_url: str, auth_key: str, station_id: str) -> dict:
     req = urllib.request.Request(
         f"http://{host}/ocpp",
-        data=body,
+        data=encode_body(ocpp_url, auth_key, station_id),
         method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
@@ -60,6 +71,34 @@ def post_ocpp(host: str, ocpp_url: str, auth_key: str, station_id: str) -> dict:
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")
         raise SystemExit(f"error: charger rejected the change (HTTP {e.code}): {detail}") from e
+
+
+def apply_and_verify(host: str, new: dict, timeout: float = 30, interval: float = 1):
+    """POST the settings, then wait for the charger to report them and fail if it never does.
+
+    The charger applies a write asynchronously: /info keeps returning the old values for several
+    seconds afterwards, so a single read-back right after the POST isn't meaningful.
+    """
+    post_ocpp(host, new["ocppUrl"], new["authKey"], new["stationId"])
+    print("\nSent. Waiting for the charger to apply it", end="", flush=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        info = get_info(host)
+        wrong = {k: (v, info[k]) for k, v in new.items() if info[k] != v}
+        if not wrong:
+            break
+        if time.monotonic() >= deadline:
+            lines = [
+                f"  {k}: sent {sent!r}, charger has {got!r}" for k, (sent, got) in wrong.items()
+            ]
+            raise SystemExit(
+                f"\nerror: the charger did not report the new settings within {timeout:.0f}s:\n"
+                + "\n".join(lines)
+            )
+        print(".", end="", flush=True)
+        time.sleep(interval)
+    print(" done. Current settings now:")
+    print_settings(info)
 
 
 def proxy_url(proxy: str, current_url: str, path: str | None) -> str:
@@ -122,9 +161,7 @@ def cmd_set(args):
         print("Aborted.")
         return
 
-    post_ocpp(args.host, new["ocppUrl"], new["authKey"], new["stationId"])
-    print("\nApplied. Current settings now:")
-    print_settings(get_info(args.host))
+    apply_and_verify(args.host, new)
 
 
 def cmd_reset(args):
@@ -143,9 +180,7 @@ def cmd_reset(args):
     if not args.yes and input("\nApply? [y/N] ").strip().lower() != "y":
         print("Aborted.")
         return
-    post_ocpp(args.host, **new)
-    print("\nApplied. Current settings now:")
-    print_settings(get_info(args.host))
+    apply_and_verify(args.host, new)
 
 
 def main():

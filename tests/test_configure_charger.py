@@ -48,3 +48,9 @@ def test_proxy_url_rejects_paths_the_proxy_would_refuse(path):
 def test_proxy_url_rejects_bad_proxy_addresses(proxy):
     with pytest.raises(SystemExit):
         proxy_url(proxy, "ws://ha:9000/charger-", None)
+
+
+def test_body_is_wrapped_in_quotes_like_the_charger_page_sends_it():
+    # The firmware drops the first/last characters of the values if the quotes are missing
+    body = configure_charger.encode_body("ws://h:8321/charger-", "key", "GRS-1")
+    assert body == b'"ocppUrl=ws%3A%2F%2Fh%3A8321%2Fcharger-&authKey=key&stationId=GRS-1"'
