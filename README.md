@@ -62,6 +62,22 @@ Set environment variables (in Home Assistant, the same settings are the app's op
 | `PING_TIMEOUT` | `60` | Seconds to wait for a pong. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warning` or `error`. `debug` logs every frame. |
 
+## Pointing the charger at the proxy
+
+The Grizzl-E's OCPP backend is set from its own web UI at `http://<charger-ip>/`, under
+**Advanced OCPP Settings**. That form is gated by a password prompt, but it's checked
+client-side only: the actual save (`POST /ocpp`) takes no password or auth of its own. So you can
+also script it with [`scripts/configure-charger.py`](scripts/configure-charger.py):
+
+```
+python3 scripts/configure-charger.py --host <charger-ip> show
+python3 scripts/configure-charger.py --host <charger-ip> set --proxy ws://<proxy-host>:8321
+python3 scripts/configure-charger.py --host <charger-ip> reset   # back to the factory backend
+```
+
+`set --proxy` appends the charger's current station ID automatically. Use `--dry-run` to preview
+a change, and `--ocpp-url`/`--auth-key`/`--station-id` to set fields individually.
+
 ## Troubleshooting
 
 To see the frames Home Assistant itself sends and receives, set the OCPP loggers in `configuration.yaml`:
