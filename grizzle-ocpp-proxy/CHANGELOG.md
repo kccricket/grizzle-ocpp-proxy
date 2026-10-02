@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.3.0
+## 0.1.0
 
-First release as `grizzle-ocpp-proxy`, forked from
+First release. Forked from
 [ocpp-2w-proxy](https://github.com/ocpp-balanz/ocpp-2w-proxy) and reduced to a fix-up proxy for the Grizzl-E.
 
 - Repairs the malformed `"configurationKey":]` reply the Grizzl-E sends for unknown keys, which Home

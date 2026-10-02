@@ -21,7 +21,7 @@ from pathlib import Path
 import websockets
 import websockets.asyncio.server
 
-__version__ = "0.3.0"
+__version__ = "0.1.0"
 
 # Written by the Home Assistant Supervisor from the app's configuration tab.
 OPTIONS_FILE = Path("/data/options.json")
