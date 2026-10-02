@@ -10,11 +10,16 @@ Examples:
     # Show the charger's current settings
     configure-charger.py --host 192.168.84.217 show
 
-    # Point the charger at this proxy (ws://<proxy-host>:8321/<station-id>)
+    # Point the charger at this proxy, keeping the URL path it already uses (e.g. "charger-")
     configure-charger.py --host 192.168.84.217 set --proxy ws://192.168.42.3:8321
 
-    # Set fields individually
-    configure-charger.py --host 192.168.84.217 set --ocpp-url ws://192.168.42.3:8321/GRS-170000598f4
+    # Set the whole URL yourself
+    configure-charger.py --host 192.168.84.217 set --ocpp-url ws://192.168.42.3:8321/charger-
+
+The charger appends its own station ID to the configured OCPP URL, so don't put the ID in the URL.
+The URL needs a path part for it to do so, and that path plus the ID becomes the charge point ID
+the CSMS sees (here "charger-GRS-170000598f4"). Changing the path therefore makes Home Assistant
+treat the charger as a new device.
 
     # Put the charger back on its factory OCPP backend
     configure-charger.py --host 192.168.84.217 reset
@@ -22,11 +27,16 @@ Examples:
 
 import argparse
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
 
 TIMEOUT = 8
+# Used when the charger's current URL has no path, e.g. the factory "...?station=" form
+DEFAULT_PATH = "charger-"
+# What the proxy accepts as a charge point ID (the URL path plus the station ID)
+PATH_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def get_info(host: str) -> dict:
@@ -52,6 +62,23 @@ def post_ocpp(host: str, ocpp_url: str, auth_key: str, station_id: str) -> dict:
         raise SystemExit(f"error: charger rejected the change (HTTP {e.code}): {detail}") from e
 
 
+def proxy_url(proxy: str, current_url: str, path: str | None) -> str:
+    """Point `current_url` at `proxy`, keeping its path (or using `path`) so the charge point ID
+    the CSMS sees doesn't change."""
+    target = urllib.parse.urlsplit(proxy)
+    if target.scheme not in ("ws", "wss") or not target.netloc:
+        raise SystemExit(f"error: --proxy must look like ws://host:port, got {proxy!r}")
+    if path is None:
+        path = urllib.parse.urlsplit(current_url).path.strip("/") or DEFAULT_PATH
+    path = path.strip("/")
+    if not PATH_PATTERN.match(path):
+        raise SystemExit(
+            f"error: URL path {path!r} must contain only letters, digits, '-' and '_' "
+            "for the proxy to accept it as a charger ID"
+        )
+    return f"{target.scheme}://{target.netloc}/{path}"
+
+
 def print_settings(info: dict):
     print(f"  Station ID : {info['stationId']} (serial: {info['serialNumber']})")
     print(f"  OCPP URL   : {info['ocppUrl']}")
@@ -68,7 +95,7 @@ def cmd_set(args):
     info = get_info(args.host)
     ocpp_url = args.ocpp_url
     if args.proxy:
-        ocpp_url = f"{args.proxy.rstrip('/')}/{info['stationId']}"
+        ocpp_url = proxy_url(args.proxy, info["ocppUrl"], args.path)
     new = {
         "ocppUrl": ocpp_url if ocpp_url is not None else info["ocppUrl"],
         "authKey": args.auth_key if args.auth_key is not None else info["authKey"],
@@ -84,6 +111,9 @@ def cmd_set(args):
     print(f"  Station ID : {new['stationId']}")
     print(f"  OCPP URL   : {new['ocppUrl']}")
     print(f"  Auth key   : {new['authKey']}")
+    print(f"\nThe charger will connect to {new['ocppUrl']}{new['stationId']}")
+    if urllib.parse.urlsplit(new["ocppUrl"]).path.strip("/") == "":
+        print("warning: the URL has no path part; the charger may not append its station ID to it")
 
     if args.dry_run:
         print("\n(dry run, nothing sent)")
@@ -130,14 +160,22 @@ def main():
     )
 
     p_set = sub.add_parser("set", help="Change one or more OCPP settings")
-    p_set.add_argument("--ocpp-url", help="Full OCPP WebSocket URL, e.g. ws://host:port/station-id")
+    p_set.add_argument(
+        "--ocpp-url",
+        help="Full OCPP WebSocket URL without the station ID, e.g. ws://host:port/charger-",
+    )
     p_set.add_argument(
         "--proxy",
-        help="Base proxy URL, e.g. ws://192.168.42.3:8321. "
-        "The charger's current station ID is appended automatically.",
+        help="Proxy address, e.g. ws://192.168.42.3:8321. Replaces the host in the charger's "
+        "current OCPP URL and keeps its path (see --path).",
+    )
+    p_set.add_argument(
+        "--path",
+        help="With --proxy: URL path to use instead of the current one (default: keep it). "
+        "Changing it changes the charge point ID the CSMS sees.",
     )
     p_set.add_argument("--auth-key", help="OCPP auth key / basic auth password")
-    p_set.add_argument("--station-id", help="Station ID used in the OCPP URL path")
+    p_set.add_argument("--station-id", help="Station ID the charger appends to the OCPP URL")
     p_set.add_argument("--yes", action="store_true", help="Don't prompt for confirmation")
     p_set.add_argument(
         "--dry-run", action="store_true", help="Show what would change, but don't send it"
@@ -160,6 +198,8 @@ def main():
         parser.error("set requires at least one of --ocpp-url, --proxy, --auth-key, --station-id")
     if args.command == "set" and args.ocpp_url and args.proxy:
         parser.error("--ocpp-url and --proxy are mutually exclusive")
+    if args.command == "set" and args.path and not args.proxy:
+        parser.error("--path only applies with --proxy")
 
     try:
         args.func(args)

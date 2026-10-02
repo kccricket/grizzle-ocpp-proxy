@@ -42,4 +42,6 @@ CI (`.github/workflows/ci.yaml`) runs ruff, pytest and the HA app linter. `relea
 
 ## Charger notes
 
+The charger appends its station ID to the OCPP URL configured in its web UI, and (reportedly) only when that URL has a path part. So the configured URL is `ws://host:port/charger-` and the charger connects as `/charger-GRS-<serial>`. That whole path is the charge point ID: `on_connect` takes it as `charger_id`, and HA keys its device on it. Never put the station ID in the URL, and don't change the path without expecting a new HA device. `scripts/configure-charger.py` edits these settings through the charger's `/info` and `/ocpp` endpoints.
+
 When reading a pcap of the charger, reassemble the TCP stream before unmasking WebSocket frames: it sends the frame header and payload in separate TCP segments. Its clock runs about 11 s fast.

@@ -11,10 +11,12 @@ and over. This app sits between the charger and Home Assistant and repairs the f
 2. In the charger's settings, change its OCPP server (central system) URL to the proxy:
 
    ```
-   ws://<your-home-assistant-ip>:8321/<charger-id>
+   ws://<your-home-assistant-ip>:8321/charger-
    ```
 
-   Keep the charger ID and any credentials the charger is already configured with.
+   The charger appends its own station ID to this URL, so don't add it yourself, but the URL needs
+   a path. Keep the path and any credentials the charger already has: the path plus the station ID
+   is the charge point ID Home Assistant knows it by, and changing it creates a new device.
 3. Leave the Home Assistant OCPP integration as it is. It continues to listen on port 9000, and the
    charger now reaches it through the proxy.
 
@@ -22,7 +24,7 @@ and over. This app sits between the charger and Home Assistant and repairs the f
 
 | Option | Default | Description |
 |---|---|---|
-| CSMS URL | `ws://homeassistant:9000` | Where traffic is forwarded. The charger ID is appended. If `homeassistant` doesn't resolve for you, use `ws://<your-home-assistant-ip>:9000`. |
+| CSMS URL | `ws://homeassistant:9000` | Where traffic is forwarded. The path the charger connected with (such as `charger-GRS-…`) is appended. If `homeassistant` doesn't resolve for you, use `ws://<your-home-assistant-ip>:9000`. |
 | Log level | `info` | `debug` logs every OCPP frame. |
 | Idle time before a ping | 300 s | The charger is pinged after this long without an OCPP message. Closed only if the ping goes unanswered. |
 | Idle check interval | 30 s | How often idleness is checked. |
@@ -42,4 +44,4 @@ The listening port is 8321. To change it, use the Network section of the app's c
       custom_components.ocpp: debug
   ```
 
-- If the charger can't connect, check that its OCPP URL ends in `/<charger-id>` and points at port 8321.
+- If the charger can't connect, check that its OCPP URL has a path (such as `/charger-`) and points at port 8321. The path may contain only letters, digits, `-` and `_`.

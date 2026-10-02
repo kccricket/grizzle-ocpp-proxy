@@ -4,7 +4,7 @@ configuration:
     description: >-
       Where the proxy forwards the charger's traffic: the OCPP server in Home Assistant.
       Leave as ws://homeassistant:9000 for the Home Assistant OCPP integration on its default
-      port. The charger's ID is appended to this URL.
+      port. The path the charger connected with (such as charger-GRS-…) is appended to this URL.
   log_level:
     name: Log level
     description: >-

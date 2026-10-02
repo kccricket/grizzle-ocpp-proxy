@@ -33,7 +33,10 @@ Everything else passes through untouched, including the charger's `Authorization
 1. Click the badge above, or in Home Assistant go to **Settings → Apps → App store → ⋮ →
    Repositories** and add `https://github.com/kccricket/grizzle-ocpp-proxy`.
 2. Install **Grizzl-E OCPP Proxy**, review its configuration, and start it.
-3. In the charger's settings, set its OCPP server URL to `ws://<your-home-assistant-ip>:8321/<charger-id>`.
+3. In the charger's settings, set its OCPP server URL to `ws://<your-home-assistant-ip>:8321/charger-`.
+   The charger appends its own station ID to this URL, so don't type it yourself, but the URL does
+   need a path. Whatever path you use becomes part of the charge point ID Home Assistant sees
+   (`charger-GRS-…` here), so keep the one you already have to avoid creating a new device.
 4. Leave the Home Assistant OCPP integration as it is, listening on port 9000.
 
 The app log shows `Applied Grizzl-E configurationKey repair` whenever it fixes a frame. See the
@@ -55,7 +58,7 @@ Set environment variables (in Home Assistant, the same settings are the app's op
 
 | Variable | Default | Description |
 |---|---|---|
-| `CSMS_URL` | *(required)* | The OCPP server to forward to, e.g. `ws://homeassistant.local:9000`. The charger ID is appended. |
+| `CSMS_URL` | *(required)* | The OCPP server to forward to, e.g. `ws://homeassistant.local:9000`. The path the charger connected with (such as `charger-GRS-…`) is appended. |
 | `LISTEN_HOST` / `LISTEN_PORT` | `0.0.0.0` / `8321` | Where the proxy listens for the charger. |
 | `WATCHDOG_STALE` | `300` | Seconds without an OCPP message before the proxy pings the charger. |
 | `WATCHDOG_INTERVAL` | `30` | How often idleness is checked, in seconds. |
@@ -75,8 +78,11 @@ python3 scripts/configure-charger.py --host <charger-ip> set --proxy ws://<proxy
 python3 scripts/configure-charger.py --host <charger-ip> reset   # back to the factory backend
 ```
 
-`set --proxy` appends the charger's current station ID automatically. Use `--dry-run` to preview
-a change, and `--ocpp-url`/`--auth-key`/`--station-id` to set fields individually.
+`set --proxy` swaps in the proxy's address and keeps the path the charger's URL already has
+(`charger-`), because the charger appends its station ID to that path and the result is the charge
+point ID Home Assistant knows it by. Use `--path` to choose a different path (that creates a new
+device in Home Assistant), `--dry-run` to preview a change, and `--ocpp-url`/`--auth-key`/`--station-id`
+to set fields individually. The path may only contain letters, digits, `-` and `_`.
 
 ## Troubleshooting
 
