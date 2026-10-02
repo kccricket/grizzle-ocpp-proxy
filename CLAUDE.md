@@ -29,7 +29,7 @@ Tests import `proxy` via `pythonpath` in `pyproject.toml` and start real mock se
 
 Repairs happen on the charger-to-CSMS path (`repair_message`, `receive_charger_messages`):
 - `"configurationKey":]` is repaired to `[]`. The frame is invalid JSON, so HA's ocpp library never delivers the reply and the call times out after 10 s.
-- `NotSupported` becomes `Rejected`, but only in replies to `ChangeConfiguration`. `receive_csms_messages` records each Call's action in `call_ids` so the reply can be matched by message id.
+- Replies are otherwise forwarded untouched. The proxy once rewrote `NotSupported` to `Rejected` in `ChangeConfiguration` replies, but that is a valid 1.6 status and the current integration handles it, so it was removed in 0.1.1. Community reports of the charger rebooting concern firmware 5.x (2022) and were worked around by editing the integration to stop sending `ChangeConfiguration` for unsupported keys; they don't show up with the current firmware.
 - Frames that still don't parse after repair are logged and dropped, never fatal.
 
 The watchdog doesn't treat OCPP silence as death: the heartbeat interval is 3600 s, and `websockets` answers WebSocket pings internally without surfacing them. After `watchdog_stale` seconds idle it sends its own ping and closes only if no pong arrives within `ping_timeout`.

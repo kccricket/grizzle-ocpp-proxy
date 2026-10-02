@@ -1,5 +1,5 @@
 name: Grizzl-E OCPP Proxy
-version: "0.1.0"
+version: "0.1.1"
 slug: grizzle_ocpp_proxy
 description: Repairs the OCPP frames a Grizzl-E EV charger gets wrong, so Home Assistant's OCPP integration works reliably
 url: https://github.com/kccricket/grizzle-ocpp-proxy

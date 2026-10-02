@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1
+
+- Removed the `NotSupported` to `Rejected` rewrite for `ChangeConfiguration` replies. `NotSupported`
+  is a valid OCPP 1.6 status and the current integration handles it, so the charger's replies now
+  pass through untouched. Only the malformed `configurationKey` frames are repaired.
+- Corrected the docs on pointing the charger at the proxy: the charger appends its own station ID to
+  the OCPP URL, so enter `ws://<host>:8321/charger-` and not the full ID.
+- Frames that aren't shaped like an OCPP message are dropped, as before, using a simpler check.
+
 ## 0.1.0
 
 First release. Forked from

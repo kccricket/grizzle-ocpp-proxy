@@ -108,29 +108,16 @@ async def test_malformed_configuration_reply_reaches_csms_repaired(csms, start_p
     }
 
 
-async def test_change_configuration_not_supported_becomes_rejected(csms, start_proxy):
+async def test_not_supported_replies_pass_through_unchanged(csms, start_proxy):
     base = await start_proxy()
     async with await connect_charger(base) as charger:
         await eventually(lambda: csms.connections)
         await csms.send('[2,"a1","ChangeConfiguration",{"key":"K","value":"1"}]')
         await charger.recv()
-        await charger.send('[3,"a1",{"status":"NotSupported"}]')
-        await eventually(lambda: csms.received)
-    assert json.loads(csms.received[0]) == [3, "a1", {"status": "Rejected"}]
-
-
-async def test_other_replies_are_not_rewritten(csms, start_proxy):
-    base = await start_proxy()
-    async with await connect_charger(base) as charger:
-        await eventually(lambda: csms.connections)
-        await csms.send('[2,"a1","GetConfiguration",{}]')
-        await charger.recv()
         reply = '[3,"a1",{"status":"NotSupported"}]'
-        await charger.send(reply)  # tracked, but not a ChangeConfiguration
-        await charger.send('[3,"unknown",{"status":"NotSupported"}]')  # not tracked at all
-        await eventually(lambda: len(csms.received) == 2)
-    assert csms.received[0] == reply
-    assert csms.received[1] == '[3,"unknown",{"status":"NotSupported"}]'
+        await charger.send(reply)
+        await eventually(lambda: csms.received)
+    assert csms.received == [reply]
 
 
 async def test_unparseable_frame_is_dropped_without_closing(csms, start_proxy):

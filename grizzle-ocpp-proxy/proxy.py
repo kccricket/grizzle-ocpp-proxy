@@ -14,14 +14,13 @@ import signal
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
-from enum import IntEnum
 from functools import partial
 from pathlib import Path
 
 import websockets
 import websockets.asyncio.server
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Written by the Home Assistant Supervisor from the app's configuration tab.
 OPTIONS_FILE = Path("/data/options.json")
@@ -89,26 +88,19 @@ class Settings:
         return settings
 
 
-class OCPPMessageType(IntEnum):
-    Call = 2
-    CallResult = 3
-    CallError = 4
-
-
 class OCPPProxy:
     # Static dict of OCPPProxy instances. key is charger_id
     proxy_list: dict[str, "OCPPProxy"] = {}
 
     # Utility functions
     @staticmethod
-    def decode_ocpp_message(message: str) -> tuple[int | None, str | None, str | None]:
-        """Decode an OCPP message from a string"""
+    def is_ocpp_frame(message: str) -> bool:
+        """Whether the frame is JSON shaped like an OCPP message: [type, id, ...]."""
         try:
-            j = json.loads(message)
-            action = j[2] if j[0] == OCPPMessageType.Call else None
-            return (j[0], j[1], action)
-        except (json.JSONDecodeError, IndexError, KeyError, TypeError):
-            return (None, None, None)
+            frame = json.loads(message)
+        except json.JSONDecodeError:
+            return False
+        return isinstance(frame, list) and len(frame) >= 3
 
     @staticmethod
     def repair_message(message: str) -> str:
@@ -118,14 +110,6 @@ class OCPPProxy:
         repaired = re.sub(r'"configurationKey":\](?=,)', '"configurationKey":[]', message)
         if repaired != message:
             logger.warning("Applied Grizzl-E configurationKey repair")
-        return repaired
-
-    @staticmethod
-    def repair_change_configuration_response(message: str) -> str:
-        """Grizzl-E returns NotSupported for ChangeConfiguration; normalize to Rejected."""
-        repaired = message.replace('"NotSupported"', '"Rejected"')
-        if repaired != message:
-            logger.warning("Replaced NotSupported with Rejected in ChangeConfiguration response")
         return repaired
 
     def __init__(
@@ -142,9 +126,6 @@ class OCPPProxy:
         if not re.match(r"^[A-Za-z0-9_-]+$", charger_id):
             logger.error(f"Charger ID '{charger_id}' contains invalid characters")
             raise ValueError("Charger ID contains invalid characters")
-
-        # Maps in-flight CSMS call IDs to their action name for response repair
-        self.call_ids: dict[str, str] = {}
 
         # Insert new OCPPProxy instance in the (static) dict of instances.
         self.proxy_list[charger_id] = self
@@ -221,17 +202,13 @@ class OCPPProxy:
                 logger.info(f"{self.charger_id} ^ : {message}")
 
                 message = OCPPProxy.repair_message(message)
-                (message_type, message_id, _) = OCPPProxy.decode_ocpp_message(message)
-                if message_type is None:
+                if not OCPPProxy.is_ocpp_frame(message):
                     logger.warning(
                         f"{self.charger_id} ^: Unparseable frame after repair, dropping: "
                         f"{message[:120]}"
                     )
                     continue
 
-                if message_type in (OCPPMessageType.CallResult, OCPPMessageType.CallError):
-                    if self.call_ids.pop(message_id, None) == "ChangeConfiguration":
-                        message = OCPPProxy.repair_change_configuration_response(message)
                 await self.csms_connection.send(message)
         except websockets.exceptions.ConnectionClosedOK:
             logger.info(f"{self.charger_id} Connection closed")
@@ -244,12 +221,9 @@ class OCPPProxy:
                 message = await self.csms_connection.recv()
                 logger.info(f"{self.charger_id} v : {message}")
 
-                (message_type, message_id, action) = OCPPProxy.decode_ocpp_message(message)
-                if message_type is None:
+                if not OCPPProxy.is_ocpp_frame(message):
                     logger.warning(f"{self.charger_id} v: Unparseable frame from CSMS, dropping")
                     continue
-                if message_type == OCPPMessageType.Call:
-                    self.call_ids[message_id] = action
 
                 await self.ws.send(message)
         except websockets.exceptions.ConnectionClosedOK:
