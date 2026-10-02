@@ -21,7 +21,7 @@ The Grizzl-E speaks OCPP 1.6, but not always correctly. The visible symptoms in 
 | Charger behavior | What the proxy does |
 |---|---|
 | Replies to `GetConfiguration` for an unknown key with `"configurationKey":]` (missing `[`), which is not valid JSON | Rewrites it to `"configurationKey":[]` so the OCPP library accepts the reply |
-| Replies `NotSupported` to `ChangeConfiguration`, which OCPP 1.6 doesn't allow | Rewrites it to `Rejected` (only for replies to `ChangeConfiguration`) |
+| Replies `NotSupported` to `ChangeConfiguration` for settings it doesn't have. That's a valid OCPP 1.6 status, but reportedly one some CSMS software mishandles | Normalizes it to `Rejected` (only for replies to `ChangeConfiguration`) |
 | Sends frames that still can't be parsed | Logs and drops them instead of taking the connection down |
 | Reconnects without closing the old connection | Replaces the stale connection for that charger ID |
 | Goes quiet for long periods (heartbeat interval is 3600 s) | Pings it before giving up, so a healthy idle charger is never dropped |
